@@ -15,8 +15,8 @@ from imutils.video import VideoStream
 
 app = Flask(__name__)
 
-model_cfg = "./models/yolov3.cfg"
-model_w = "./models/yolov3.weights"
+model_cfg = "./models/yolov3-tiny.cfg"
+model_w = "./models/yolov3-tiny.weights"
 INPUT_FILE = "https://agoravideos.blob.core.windows.net/videos/supermarket.mp4"
 CONFIDENCE_THRESHOLD = 0.3
 
@@ -67,6 +67,7 @@ def get_frame():
         classIDs = []
 
         # loop over each of the layer outputs
+        # loop over each of the layer outputs
         for output in layerOutputs:
             # loop over each of the detections
             for detection in output:
@@ -97,28 +98,28 @@ def get_frame():
                     confidences.append(float(confidence))
                     classIDs.append(classID)
 
-        # apply non-maxima suppression to suppress weak, overlapping bounding
-        # boxes
-        idxs = cv2.dnn.NMSBoxes(
-            boxes, confidences, CONFIDENCE_THRESHOLD, CONFIDENCE_THRESHOLD
-        )
+            # apply non-maxima suppression to suppress weak, overlapping bounding
+            # boxes
+            idxs = cv2.dnn.NMSBoxes(
+                boxes, confidences, CONFIDENCE_THRESHOLD, CONFIDENCE_THRESHOLD
+            )
 
-        # ensure at least one detection exists
-        if len(idxs) > 0:
-            # loop over the indexes we are keeping
-            for i in idxs.flatten():
-                # extract the bounding box coordinates
-                (x, y) = (boxes[i][0], boxes[i][1])
-                (w, h) = (boxes[i][2], boxes[i][3])
+            # ensure at least one detection exists
+            if len(idxs) > 0:
+                # loop over the indexes we are keeping
+                for i in idxs.flatten():
+                    # extract the bounding box coordinates
+                    (x, y) = (boxes[i][0], boxes[i][1])
+                    (w, h) = (boxes[i][2], boxes[i][3])
 
-                cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                    cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
         # show the output image
         ret, buffer = cv2.imencode('.jpg', image)
         frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         fps.update()
+        yield (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', threaded=True, debug=True)
