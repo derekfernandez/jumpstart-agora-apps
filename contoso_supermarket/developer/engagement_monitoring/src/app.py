@@ -7,24 +7,25 @@ import socket
 import secrets
 from datetime import datetime
 import json
-from openvino.inference_engine import IECore
 import time
 import numpy as np
+import imutils
+from imutils.video import FPS
+from imutils.video import VideoStream
 
 app = Flask(__name__)
 
-model_xml = './models/yolov2-fp16.xml'
-model_bin = './models/yolov2-fp16.bin'
-video_path = 'https://agoravideos.blob.core.windows.net/videos/supermarket.mp4'
+model_cfg = "./models/yolov3.cfg"
+model_w = "./models/yolov3.weights"
+INPUT_FILE = "https://agoravideos.blob.core.windows.net/videos/supermarket.mp4"
+CONFIDENCE_THRESHOLD = 0.3
 
-# Load OpenVino model
-ie = IECore()
-net = ie.read_network(model=model_xml, weights=model_bin)
-exec_net = ie.load_network(network=net, device_name="GPU")
+H = None
+W = None
+fps = FPS().start()
 
-# Get input and output node names
-input_blob = next(iter(net.input_info))
-output_blob = next(iter(net.outputs))
+net = cv2.dnn.readNetFromDarknet(model_cfg, model_w)
+vs = cv2.VideoCapture(INPUT_FILE)
 
 @app.route('/')
 def index():
@@ -41,82 +42,83 @@ def people_count():
     global person_count
     return str(person_count)
 
-
 def get_frame():
-    # replace 'video.mp4' with your video file name
-    global person_count
-    cap = cv2.VideoCapture(video_path)
-    while cap.isOpened():
-        frame_count = 0
-        total_fps = 0   
-        # Read frame from video capture
-        ret, frame = cap.read()
-        start_time = time.time()
-        # Break if end of video
 
-        heatmap = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.float32)
-
-        if not ret:
+    # determine only the *output* layer names that we need from YOLO
+    ln = net.getLayerNames()
+    ln = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
+    cnt = 0
+    while True:
+        cnt += 1
+        try:
+            (grabbed, image) = vs.read()
+        except:
             break
+        blob = cv2.dnn.blobFromImage(image, 1 / 255.0, (416, 416), swapRB=True, crop=False)
+        net.setInput(blob)
+        if W is None or H is None:
+            (H, W) = image.shape[:2]
+        layerOutputs = net.forward(ln)
 
-        # Preprocess frame for input to OpenVino model
-        input_shape = net.input_info[input_blob].input_data.shape
-        resized_frame = cv2.resize(frame, (input_shape[3], input_shape[2]))
-        preprocessed_frame = resized_frame.transpose((2, 0, 1))  # Change data layout from HWC to CHW
-        preprocessed_frame = preprocessed_frame.reshape(1, *preprocessed_frame.shape)
+        # initialize our lists of detected bounding boxes, confidences, and
+        # class IDs, respectively
+        boxes = []
+        confidences = []
+        classIDs = []
 
-        # Start inference
-    
-        output = exec_net.infer(inputs={input_blob: preprocessed_frame})
-        inference_time = time.time() - start_time
+        # loop over each of the layer outputs
+        for output in layerOutputs:
+            # loop over each of the detections
+            for detection in output:
+                # extract the class ID and confidence (i.e., probability) of
+                # the current object detection
+                scores = detection[5:]
+                classID = np.argmax(scores)
+                confidence = scores[classID]
 
-        # Get output and draw on frame
-        boxes = output[output_blob][0][0]
-        #frame = draw_heatmap(frame, boxes, threshold=0.5)
-       
-        person_count = 0
-        
-        for box in boxes:
-            if box[2] > 0.5:
-                person_count += 1
-                x1, y1, x2, y2 = box[3], box[4], box[5], box[6]
-                cv2.rectangle(frame, (int(x1 * frame.shape[1]), int(y1 * frame.shape[0])),
-                            (int(x2 * frame.shape[1]), int(y2 * frame.shape[0])), (0, 255, 0), 2)                
-                xmin = int(x1 * frame.shape[1])
-                xmax = int(x2 * frame.shape[1])
-                ymin = int(y1 * frame.shape[0])
-                ymax = int(y2 * frame.shape[0])
-                heatmap[ymin:ymax, xmin:xmax] += 1
+                # filter out weak predictions by ensuring the detected
+                # probability is greater than the minimum probability
+                if confidence > CONFIDENCE_THRESHOLD:
+                    # scale the bounding box coordinates back relative to the
+                    # size of the image, keeping in mind that YOLO actually
+                    # returns the center (x, y)-coordinates of the bounding
+                    # box followed by the boxes' width and height
+                    box = detection[0:4] * np.array([W, H, W, H])
+                    (centerX, centerY, width, height) = box.astype("int")
 
-        heatmap = cv2.normalize(heatmap, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        # Apply color map to heatmap
-        heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+                    # use the center (x, y)-coordinates to derive the top and
+                    # and left corner of the bounding box
+                    x = int(centerX - (width / 2))
+                    y = int(centerY - (height / 2))
 
-        # Add heatmap to frame as overlay
-        alpha = 0.5
-        #cv2.imshow("Heatmap", heatmap)
-        cv2.addWeighted(heatmap, alpha, frame, 1 - alpha, 0, frame)
-        
-        # Display frame with detection boxes
-        end_time = time.time()
-        
-        fps = 1 / (end_time - start_time)
-        # print(f"{fps:.3f} FPS")
-        # add to total FPS
-        total_fps += fps
-        # add to total number of frames
-        frame_count += 1
-        #print(output)
-        
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(frame, f"People Count: {person_count}", (50, 50), font, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        #print(f"{fps:.3f} FPS")
-        #cv2.imshow("Frame", frame)
-        ret, buffer = cv2.imencode('.jpg', frame)
+                    # update our list of bounding box coordinates, confidences,
+                    # and class IDs
+                    boxes.append([x, y, int(width), int(height)])
+                    confidences.append(float(confidence))
+                    classIDs.append(classID)
+
+        # apply non-maxima suppression to suppress weak, overlapping bounding
+        # boxes
+        idxs = cv2.dnn.NMSBoxes(
+            boxes, confidences, CONFIDENCE_THRESHOLD, CONFIDENCE_THRESHOLD
+        )
+
+        # ensure at least one detection exists
+        if len(idxs) > 0:
+            # loop over the indexes we are keeping
+            for i in idxs.flatten():
+                # extract the bounding box coordinates
+                (x, y) = (boxes[i][0], boxes[i][1])
+                (w, h) = (boxes[i][2], boxes[i][3])
+
+                cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+        # show the output image
+        ret, buffer = cv2.imencode('.jpg', image)
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
+                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        fps.update()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', threaded=True, debug=True)
