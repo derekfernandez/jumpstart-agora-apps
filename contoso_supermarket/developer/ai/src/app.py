@@ -20,8 +20,6 @@ model_w = "./models/yolov3-tiny.weights"
 INPUT_FILE = "https://agoravideos.blob.core.windows.net/videos/supermarket.mp4"
 CONFIDENCE_THRESHOLD = 0.3
 
-H = None
-W = None
 fps = FPS().start()
 
 net = cv2.dnn.readNetFromDarknet(model_cfg, model_w)
@@ -43,7 +41,8 @@ def people_count():
     return str(person_count)
 
 def get_frame():
-
+    H = None
+    W = None
     # determine only the *output* layer names that we need from YOLO
     ln = net.getLayerNames()
     ln = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
